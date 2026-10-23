@@ -1,0 +1,18 @@
+# Окружение
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# Секреты: ключ сервисного аккаунта Google и личный конфиг с ID таблицы
+secrets/
+config.yaml
+
+# Всё, что программа создаёт при работе
+state/
+backups/
+reports/
+excel/
+
+# Временные файлы Excel
+~$*.xlsx

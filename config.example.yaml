@@ -1,0 +1,68 @@
+# Скопируйте этот файл в config.yaml (он в .gitignore) и впишите свою таблицу.
+# Относительные пути считаются от папки, где лежит config.yaml.
+
+google:
+  # Ссылка на таблицу целиком или только ID (часть между /d/ и /edit)
+  spreadsheet_id: "PASTE_SPREADSHEET_ID_HERE"
+  # JSON-ключ сервисного аккаунта Google Cloud. В git не попадает (папка secrets/ в .gitignore).
+  # Можно переопределить переменной окружения SHEETSYNC_CREDENTIALS.
+  credentials_file: secrets/service_account.json
+
+excel:
+  workbook: excel/Steel_Management_Report.xlsx
+  log_sheet: Sync Log          # лист с журналом синков, создаётся сам
+
+storage:
+  state_db: state/sync_state.sqlite   # история запусков и последний снимок данных
+  backup_dir: backups                 # .xlsx-снимки каждого успешного синка
+  backup_keep: 10                     # сколько последних снимков хранить на задание
+  report_dir: reports                 # подробные отчёты о проблемах в данных
+
+jobs:
+  forecast:
+    title: Прогноз продаж (объём, цена, выручка)
+    source:
+      tab: Forecast Inputs
+      range: B4:BO3000       # строка 4 — заголовки, ниже — данные; запас по строкам
+    target:
+      sheet: Forecast
+      cell: B4
+      timestamp_cell: C2
+    columns:
+      numeric_pattern: '^\d{4}-\d{2}$'   # все столбцы-месяцы вида 2026-03
+    validation:
+      required_columns: [Metric, Code, Company, Product, Market, Unit]
+      key_columns: [Code]
+      non_negative: all
+      min_rows: 100
+      max_row_drop_pct: 20    # строк стало меньше на 20%+ относительно прошлого синка — стоп
+      max_bad_values_pct: 2   # больше 2% нечитаемых чисел — структура явно сломалась
+      revenue_check:
+        metric_column: Metric
+        group_by: [Company, Product, Market]
+        volume: Volume        # kt
+        price: Price          # $/t
+        revenue: Revenue      # $m, должно быть ≈ Volume × Price / 1000
+        tolerance_pct: 1
+    backup: true
+
+  orders:
+    title: Журнал заказов
+    source:
+      tab: Orders
+      # range не задан — берём весь заполненный лист, сколько бы строк там ни было
+    target:
+      sheet: Orders
+      cell: A4
+      timestamp_cell: B2
+    columns:
+      numeric: [volume_t, price_usd_t]
+      date: [order_date]
+    validation:
+      required_columns: [order_id, order_date, company, customer_inn, region, product, volume_t, price_usd_t, status]
+      key_columns: [order_id]
+      non_negative: [price_usd_t]   # объём бывает отрицательным у возвратов
+      min_rows: 1000
+      max_row_drop_pct: 10
+      max_bad_values_pct: 5
+    backup: true

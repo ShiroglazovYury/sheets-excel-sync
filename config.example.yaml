@@ -23,7 +23,7 @@ jobs:
     title: Прогноз продаж (объём, цена, выручка)
     source:
       tab: Forecast Inputs
-      range: B4:BO3000       # строка 4 — заголовки, ниже — данные; запас по строкам
+      range: B4:BP3000       # строка 4 — заголовки, ниже — данные; запас по строкам
     target:
       sheet: Forecast
       cell: B4
@@ -31,7 +31,7 @@ jobs:
     columns:
       numeric_pattern: '^\d{4}-\d{2}$'   # все столбцы-месяцы вида 2026-03
     validation:
-      required_columns: [Metric, Code, Company, Product, Market, Unit]
+      required_columns: [Metric, Code, Company, Product, Market, Channel, Unit]
       key_columns: [Code]
       non_negative: all
       min_rows: 100
@@ -39,7 +39,7 @@ jobs:
       max_bad_values_pct: 2   # больше 2% нечитаемых чисел — структура явно сломалась
       revenue_check:
         metric_column: Metric
-        group_by: [Company, Product, Market]
+        group_by: [Company, Product, Market, Channel]
         volume: Volume        # kt
         price: Price          # $/t
         revenue: Revenue      # $m, должно быть ≈ Volume × Price / 1000

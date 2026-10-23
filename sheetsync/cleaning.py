@@ -173,9 +173,10 @@ def clean_table(table: Table, numeric_idx: set[int], date_idx: set[int]):
 
             if status == BAD:
                 stats.bad_values += 1
-                kind = "дата" if col in date_idx else "число" if col in numeric_idx else "значение"
+                kind = "некорректная дата" if col in date_idx else (
+                    "некорректное число" if col in numeric_idx else "ошибка формулы")
                 issues.append(Issue(
-                    "warning", f"некорректное {kind} {value!r} — ячейка оставлена пустой",
+                    "warning", f"{kind} {value!r} — ячейка оставлена пустой",
                     row=row_number, column=header[col],
                 ))
                 new_value = None

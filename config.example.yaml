@@ -42,7 +42,8 @@ jobs:
         group_by: [Company, Product, Market, Channel]
         volume: Volume        # kt
         price: Price          # $/t
-        revenue: Revenue      # $m, должно быть ≈ Volume × Price / 1000
+        revenue: Revenue      # $m, должно быть ≈ Volume × Price / divisor
+        divisor: 1000         # kt × $/t = тыс. $ → млн $
         tolerance_pct: 1
     backup: true
 

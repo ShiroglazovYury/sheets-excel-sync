@@ -41,6 +41,7 @@ class RevenueCheck:
     volume: str
     price: str
     revenue: str
+    divisor: float = 1000.0  # kt × $/t = тыс. $, а выручка в млн $ → делим на 1000
     tolerance_pct: float = 1.0
 
 
@@ -205,6 +206,7 @@ def _parse_rules(raw: dict, where: str) -> ValidationRules:
             volume=_get(rc, "volume", w, str),
             price=_get(rc, "price", w, str),
             revenue=_get(rc, "revenue", w, str),
+            divisor=_get(rc, "divisor", w, float, default=1000.0),
             tolerance_pct=_get(rc, "tolerance_pct", w, float, default=1.0),
         )
 

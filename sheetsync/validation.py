@@ -23,29 +23,70 @@ from .table import Table
 
 @dataclass
 class ValidationReport:
+    """Отчёт проверки: все найденные проблемы и заметки об автоисправлениях.
+
+    Зачем нужен: собрать в одном месте проблемы двух уровней — error (данные
+    писать нельзя) и warning (писать можно, но человек должен знать) — и уметь
+    показать их коротко (в окне Excel) и полностью (в файле отчёта).
+
+    Поля:
+        issues: список Issue (и из очистки, и из проверок).
+        notes: фразы «Исправлено автоматически: …» из CleaningStats.
+    """
     issues: list[Issue] = field(default_factory=list)
     notes: list[str] = field(default_factory=list)
 
     def error(self, message, row=None, column=None):
+        """Добавляет блокирующую проблему: с ней данные в Excel не попадут.
+
+        Аргументы:
+            message: текст для человека.
+            row: номер строки в Google Sheets (если проблема в конкретной строке).
+            column: название столбца.
+        """
         self.issues.append(Issue("error", message, row, column))
 
     def warning(self, message, row=None, column=None):
+        """Добавляет предупреждение: данные запишутся, но проблема попадёт в отчёт.
+
+        Аргументы:
+            message: текст для человека.
+            row: номер строки в Google Sheets (если проблема в конкретной строке).
+            column: название столбца.
+        """
         self.issues.append(Issue("warning", message, row, column))
 
     @property
     def errors(self) -> list[Issue]:
+        """Только блокирующие проблемы (уровень error)."""
         return [i for i in self.issues if i.level == "error"]
 
     @property
     def warnings(self) -> list[Issue]:
+        """Только предупреждения (уровень warning)."""
         return [i for i in self.issues if i.level == "warning"]
 
     @property
     def ok(self) -> bool:
+        """True, если нет ни одной ошибки — значит, данные можно писать в Excel.
+
+        Предупреждения на это не влияют.
+        """
         return not self.errors
 
     def summary(self, limit: int = 5) -> str:
-        """Короткая версия для окна в Excel: первые `limit` проблем каждого уровня."""
+        """Короткая версия отчёта для окна Excel.
+
+        Зачем нужна: в окне не поместятся сотни строк, поэтому показываются первые
+        `limit` проблем каждого уровня и «… и ещё N»; полный список лежит в файле
+        отчёта. В конце — строка об автоисправлениях.
+
+        Аргументы:
+            limit: сколько проблем каждого уровня показать.
+
+        Возвращает:
+            Текст или «Проблем не найдено.».
+        """
         lines = []
         for title, items in (("Ошибки", self.errors), ("Предупреждения", self.warnings)):
             if not items:
@@ -59,6 +100,11 @@ class ValidationReport:
         return "\n".join(lines) if lines else "Проблем не найдено."
 
     def full_text(self) -> str:
+        """Полный текст отчёта — все проблемы с пометкой [ERROR] или [WARNING].
+
+        Зачем нужна: этот текст сохраняется в файл reports/*.txt, чтобы можно было
+        пройтись по всем проблемам и исправить источник.
+        """
         lines = [f"[{i.level.upper()}] {i}" for i in self.issues]
         if self.notes:
             lines.append("Исправлено автоматически: " + "; ".join(self.notes))
@@ -74,6 +120,32 @@ def validate(
     previous_rows: int | None = None,
     force: bool = False,
 ) -> ValidationReport:
+    """Проверяет очищенные данные по правилам задания.
+
+    Зачем нужна: это шаг «Проверки» и главная «своя логика» проекта: лучше не
+    записать ничего, чем записать криво. По порядку:
+        1. заголовок: нет обязательного или ключевого столбца, дубль заголовка —
+           error; дальше при этом не проверяем, иначе отчёт зашумят следствия;
+        2. строк меньше min_rows — error;
+        3. строк стало меньше, чем в прошлый раз, больше чем на max_row_drop_pct —
+           error (при force — warning);
+        4. доля нечитаемых чисел больше max_bad_values_pct — error: похоже,
+           столбцы съехали;
+        5. пустые или повторяющиеся ключи строк — error;
+        6. отрицательные значения — warning;
+        7. выручка не сходится с объём × цена — warning.
+
+    Аргументы:
+        table: очищенная таблица.
+        rules: правила задания из конфига.
+        numeric_idx: номера числовых столбцов.
+        stats: статистика очистки (оттуда доля мусора и заметки).
+        previous_rows: сколько строк было в прошлый успешный синк (или None).
+        force: ослабить проверку падения числа строк до предупреждения.
+
+    Возвращает:
+        ValidationReport; report.ok — можно ли писать в Excel.
+    """
     report = ValidationReport(notes=stats.notes())
 
     _check_header(table, rules, report)
@@ -115,6 +187,18 @@ def validate(
 
 
 def _check_header(table: Table, rules: ValidationRules, report: ValidationReport):
+    """Проверяет заголовок: все нужные столбцы на месте и нет дублей.
+
+    Зачем нужна: если столбец переименовали или удалили, данные уже нельзя
+    писать в модель. Если такой столбец есть, но с другим регистром ('Company'
+    вместо 'company'), в сообщении будет подсказка «есть похожий». Ключевые
+    столбцы проверяются, даже если их забыли перечислить в required_columns.
+
+    Аргументы:
+        table: таблица.
+        rules: правила (required_columns и key_columns).
+        report: отчёт, в который добавляются ошибки.
+    """
     present = set(table.header)
     by_lower = {h.lower(): h for h in table.header}
     # ключевые столбцы обязательны, даже если их забыли перечислить в required_columns
@@ -133,6 +217,18 @@ def _check_header(table: Table, rules: ValidationRules, report: ValidationReport
 
 
 def _check_keys(table: Table, key_columns: tuple[str, ...], report: ValidationReport):
+    """Проверяет ключи строк: они не пустые и не повторяются.
+
+    Зачем нужна: по ключу (например order_id) строки сопоставляются при
+    сравнении с прошлым синком. Дубль ключа почти всегда означает ошибку в
+    источнике (строку скопировали), а сопоставление по такому ключу было бы
+    неоднозначным. В сообщении — номера строк с дублем (до 10).
+
+    Аргументы:
+        table: таблица.
+        key_columns: столбцы-ключ; пусто — проверка не выполняется.
+        report: отчёт.
+    """
     if not key_columns:
         return
     idx = [table.column_index(c) for c in key_columns]
@@ -151,6 +247,18 @@ def _check_keys(table: Table, key_columns: tuple[str, ...], report: ValidationRe
 
 
 def _check_non_negative(table, rules: ValidationRules, numeric_idx: set[int], report):
+    """Предупреждает об отрицательных значениях в столбцах, где их быть не должно.
+
+    Зачем нужна: отрицательная цена или объём в прогнозе — почти всегда
+    опечатка. Но это не повод блокировать запись (в заказах, например, объём
+    бывает отрицательным у возвратов), поэтому только предупреждение.
+
+    Аргументы:
+        table: таблица.
+        rules: правила (all_numeric_non_negative или список столбцов).
+        numeric_idx: номера числовых столбцов (для варианта «все числовые»).
+        report: отчёт.
+    """
     if rules.all_numeric_non_negative:
         columns = sorted(numeric_idx)
     else:
@@ -163,11 +271,22 @@ def _check_non_negative(table, rules: ValidationRules, numeric_idx: set[int], re
 
 
 def _check_revenue(table: Table, rc: RevenueCheck, numeric_idx: set[int], report: ValidationReport):
-    """Выручка в каждом месяце должна быть ≈ объём × цена / divisor.
+    """Проверяет, что выручка в каждом месяце ≈ объём × цена / divisor.
+
+    Зачем нужна: бизнес-правило прогноза. Если выручку «поправили руками» и она
+    перестала сходиться с объёмом и ценой, правило покажет комбинацию, месяц и
+    расхождение в процентах.
 
     Строки объёма, цены и выручки одной комбинации (компания × продукт × …)
-    находим по столбцам group_by. Сравниваем с допуском tolerance_pct, но не
-    точнее 0.001: выручка в источнике округлена до 3 знаков.
+    находятся по столбцам group_by. Сравнение — с допуском tolerance_pct, но не
+    точнее 0.001: выручка в источнике округлена до 3 знаков. Если в каком-то
+    месяце одно из трёх значений пустое, этот месяц пропускается.
+
+    Аргументы:
+        table: таблица.
+        rc: настройки правила из конфига.
+        numeric_idx: номера столбцов-месяцев.
+        report: отчёт; нехватка нужных столбцов — error, расхождения — warning.
     """
     missing = [c for c in (rc.metric_column, *rc.group_by) if c not in table.header]
     if missing:

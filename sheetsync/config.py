@@ -34,7 +34,20 @@ _REQUIRED = object()
 
 @dataclass(frozen=True)
 class RevenueCheck:
-    """Правило «выручка = объём × цена» для строк одной группы."""
+    """Правило «выручка = объём × цена / divisor» для строк одной группы.
+
+    Зачем нужен: в прогнозе объём, цена и выручка лежат отдельными строками.
+    Если выручку «поправили руками» и она перестала сходиться с объёмом и
+    ценой, это почти всегда ошибка в источнике. Правило ловит такие ячейки.
+
+    Поля:
+        metric_column: столбец с названием метрики (Metric).
+        group_by: столбцы, которые вместе задают комбинацию (компания, продукт,
+            рынок, канал); внутри неё ищутся строки объёма, цены и выручки.
+        volume, price, revenue: значения metric_column для этих трёх строк.
+        divisor: делитель для перевода единиц (kt × $/t = тыс. $ → млн $: 1000).
+        tolerance_pct: допустимое расхождение, %.
+    """
 
     metric_column: str
     group_by: tuple[str, ...]
@@ -47,6 +60,25 @@ class RevenueCheck:
 
 @dataclass(frozen=True)
 class ValidationRules:
+    """Правила проверки данных одного задания (раздел validation в config.yaml).
+
+    Зачем нужен: собрать все правила в один объект, который validate() получает
+    целиком. Значения по умолчанию подобраны так, что пустой раздел validation
+    почти ничего не проверяет.
+
+    Поля:
+        required_columns: столбцы, без которых данные писать нельзя.
+        key_columns: столбцы-ключ строки (например order_id) — по ним ищутся
+            дубли и сопоставляются строки при сравнении с прошлым синком.
+        non_negative_columns: столбцы, где отрицательное значение подозрительно.
+        all_numeric_non_negative: то же для всех числовых столбцов сразу
+            (в конфиге non_negative: all).
+        min_rows: если строк меньше — ошибка.
+        max_row_drop_pct: на сколько процентов число строк может упасть с
+            прошлого синка; None — не проверять.
+        max_bad_values_pct: допустимая доля нечитаемых чисел, %.
+        revenue_check: правило «выручка = объём × цена» или None.
+    """
     required_columns: tuple[str, ...] = ()
     key_columns: tuple[str, ...] = ()
     non_negative_columns: tuple[str, ...] = ()
@@ -59,7 +91,24 @@ class ValidationRules:
 
 @dataclass(frozen=True)
 class JobConfig:
-    """Одно задание синка: какой диапазон откуда взять и куда положить."""
+    """Одно задание синка: какой диапазон откуда взять и куда положить.
+
+    Зачем нужен: в config.yaml может быть сколько угодно заданий (сейчас
+    forecast и orders), и все они обрабатываются одним и тем же кодом. Всё, чем
+    задания отличаются, собрано здесь.
+
+    Поля:
+        name, title: короткое имя (для команд и имён файлов) и название для людей.
+        source_tab, source_range: лист и диапазон в Google Sheets; range = None —
+            весь заполненный лист.
+        target_sheet, target_cell: лист в Excel и левая верхняя ячейка записи.
+        timestamp_cell: куда поставить время обновления (или None).
+        numeric_columns, numeric_pattern: какие столбцы числовые — по именам
+            и/или по регулярному выражению (например, все месяцы вида 2026-03).
+        date_columns: какие столбцы содержат даты.
+        rules: правила проверки (ValidationRules).
+        backup: делать ли бэкап после успешной записи.
+    """
 
     name: str
     title: str
@@ -77,6 +126,21 @@ class JobConfig:
 
 @dataclass(frozen=True)
 class AppConfig:
+    """Вся конфигурация программы, загруженная из config.yaml.
+
+    Зачем нужен: модули получают настройки готовым объектом с понятными полями
+    и уже проверенными типами, а не разбирают словарь из YAML каждый сам. Все
+    пути здесь уже абсолютные.
+
+    Поля:
+        path: откуда загружен конфиг.
+        spreadsheet_id: ID Google-таблицы-источника.
+        credentials_file: путь к ключу Google.
+        workbook_path, log_sheet: книга Excel и имя листа журнала синков.
+        state_db, backup_dir, backup_keep, report_dir: где хранить состояние,
+            бэкапы (и сколько штук) и отчёты о проблемах в данных.
+        jobs: задания синка по имени.
+    """
     path: Path
     spreadsheet_id: str
     credentials_file: Path
@@ -89,6 +153,17 @@ class AppConfig:
     jobs: dict[str, JobConfig]
 
     def job(self, name: str) -> JobConfig:
+        """Возвращает задание по имени.
+
+        Зачем нужна: вместо голого KeyError при опечатке (run sales) пользователь
+        видит, какие задания вообще есть.
+
+        Аргументы:
+            name: имя задания, например "orders".
+
+        Исключения:
+            ConfigError: такого задания нет в config.yaml.
+        """
         try:
             return self.jobs[name]
         except KeyError:
@@ -98,6 +173,27 @@ class AppConfig:
 
 
 def load_config(path=None) -> AppConfig:
+    """Читает config.yaml и превращает его в проверенный AppConfig.
+
+    Зачем нужна: это первое, что делает программа при любом запуске. Конфиг
+    проверяется сразу и целиком: лучше упасть до похода в Google с сообщением
+    «не заполнен ключ jobs.orders.target.sheet», чем через минуту посреди синка.
+
+    Все относительные пути считаются от папки конфига — поэтому программа
+    работает одинаково, откуда бы её ни запустили (из консоли или из Excel, у
+    которого своя текущая папка). Путь к ключу можно подменить переменной
+    окружения SHEETSYNC_CREDENTIALS.
+
+    Аргументы:
+        path: путь к конфигу; None — config.yaml в корне проекта.
+
+    Возвращает:
+        AppConfig.
+
+    Исключения:
+        ConfigError: файла нет, он не читается как YAML, не заполнены нужные
+            ключи, неверные типы или в spreadsheet_id осталась заглушка.
+    """
     path = Path(path) if path else DEFAULT_CONFIG_PATH
     if not path.exists():
         raise ConfigError(
@@ -144,12 +240,40 @@ def load_config(path=None) -> AppConfig:
 
 
 def extract_spreadsheet_id(url_or_id: str) -> str:
-    """Принимает и голый ID, и ссылку целиком — люди обычно вставляют ссылку."""
+    """Достаёт ID таблицы из ссылки на неё или возвращает ID как есть.
+
+    Зачем нужна: люди обычно вставляют в конфиг ссылку целиком
+    (https://docs.google.com/spreadsheets/d/<ID>/edit…), а API нужен только ID —
+    часть между /d/ и следующим слешем.
+
+    Аргументы:
+        url_or_id: ссылка или ID.
+
+    Возвращает:
+        ID таблицы.
+    """
     match = _SHEET_ID_RE.search(url_or_id)
     return match.group(1) if match else url_or_id.strip()
 
 
 def _parse_job(name: str, body) -> JobConfig:
+    """Разбирает один раздел jobs.<имя> из YAML в объект JobConfig.
+
+    Зачем нужна: проверяет всё, что относится к заданию: разделы source и target
+    на месте, диапазон похож на B4:BO3000, ячейки похожи на B4, регулярное
+    выражение numeric_pattern корректно. Адреса приводятся к верхнему регистру.
+
+    Аргументы:
+        name: имя задания (ключ в разделе jobs).
+        body: содержимое раздела из YAML.
+
+    Возвращает:
+        JobConfig.
+
+    Исключения:
+        ConfigError: с точным путём к ошибочному ключу, например
+            jobs.forecast.source.range.
+    """
     where = f"jobs.{name}"
     if not isinstance(body, dict):
         raise ConfigError(f"Раздел {where} должен быть словарём.")
@@ -193,6 +317,20 @@ def _parse_job(name: str, body) -> JobConfig:
 
 
 def _parse_rules(raw: dict, where: str) -> ValidationRules:
+    """Разбирает раздел validation задания в ValidationRules.
+
+    Зачем нужна: отдельно обрабатывает два особых случая — non_negative: all
+    (все числовые столбцы сразу) и вложенный раздел revenue_check.
+    Отсутствующие правила получают значения по умолчанию.
+
+    Аргументы:
+        raw: содержимое раздела validation (может быть пустым словарём).
+        where: путь к разделу для сообщений об ошибках, например
+            "jobs.orders.validation".
+
+    Возвращает:
+        ValidationRules.
+    """
     non_negative = raw.get("non_negative", ())
     all_numeric = non_negative == "all"
 
@@ -223,6 +361,23 @@ def _parse_rules(raw: dict, where: str) -> ValidationRules:
 
 
 def _section(d: dict, key: str, where: str = "") -> dict:
+    """Достаёт из словаря вложенный раздел и проверяет, что это словарь.
+
+    Зачем нужна: без неё опечатка в YAML (раздела нет или вместо него строка)
+    дала бы непонятный AttributeError где-то дальше. Здесь же сразу будет
+    сообщение «нет раздела 'jobs.orders.target'».
+
+    Аргументы:
+        d: словарь, в котором ищем.
+        key: имя раздела.
+        where: путь к словарю d — для текста ошибки.
+
+    Возвращает:
+        Найденный раздел (dict).
+
+    Исключения:
+        ConfigError: раздела нет или он не словарь.
+    """
     full = f"{where}.{key}" if where else key
     value = d.get(key)
     if not isinstance(value, dict):
@@ -231,7 +386,29 @@ def _section(d: dict, key: str, where: str = "") -> dict:
 
 
 def _get(d: dict, key: str, where: str, kind: type, default=_REQUIRED):
-    """Достаёт значение и проверяет его тип; списки возвращает кортежем строк."""
+    """Достаёт значение из словаря и проверяет его тип.
+
+    Зачем нужна: единое место для всех проверок типов конфига, чтобы каждая
+    ошибка выглядела одинаково: «'jobs.orders.validation.min_rows' должен быть
+    типа int, а сейчас: 'много'». Тонкости:
+        * для float принимается и целое число (tolerance_pct: 1);
+        * списки должны состоять из строк и возвращаются кортежем — объекты
+          конфига неизменяемые (frozen), и кортеж тоже нельзя изменить;
+        * True/False не принимаются как int, хотя в Python bool — подкласс int.
+
+    Аргументы:
+        d: словарь, в котором ищем.
+        key: имя ключа.
+        where: путь к словарю — для текста ошибки.
+        kind: ожидаемый тип: str, int, float, bool или list.
+        default: значение, если ключа нет; если не передан — ключ обязателен.
+
+    Возвращает:
+        Значение нужного типа (список — кортежем) или default.
+
+    Исключения:
+        ConfigError: обязательного ключа нет или тип не тот.
+    """
     full = f"{where}.{key}"
     value = d.get(key)
     if value is None:

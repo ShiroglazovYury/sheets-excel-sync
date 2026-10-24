@@ -29,6 +29,20 @@ SUCCESS, UNCHANGED, DRY_RUN, FAILED = "success", "unchanged", "dry-run", "failed
 
 @dataclass
 class RunResult:
+    """Итог одного запуска задания, который не упал с ошибкой.
+
+    Зачем нужен: точки входа получают всё, что нужно показать человеку, одним
+    объектом и собирают из него текст методом message().
+
+    Поля:
+        job: задание.
+        status: success, unchanged или dry-run.
+        table: очищенные данные.
+        report: отчёт проверок.
+        diff: что изменилось с прошлого синка.
+        seconds: сколько длился запуск.
+        backup_path, report_path: созданные бэкап и файл отчёта (или None).
+    """
     job: JobConfig
     status: str
     table: Table
@@ -39,6 +53,15 @@ class RunResult:
     report_path: Path | None = None
 
     def message(self) -> str:
+        """Собирает текст итога для окна Excel или консоли.
+
+        Зачем нужна: в одном месте решается, что увидит человек: строка про запись
+        (или «ничего не изменилось» / dry-run) со временем выполнения, сводка diff,
+        сводка проблем в данных, пути к отчёту и бэкапу. Пустые части не выводятся.
+
+        Возвращает:
+            Текст из нескольких абзацев.
+        """
         job, t = self.job, self.table
         head = {
             SUCCESS: f"«{job.title}»: записано {t.n_rows} строк × {t.n_cols} столбцов на лист '{job.target_sheet}'.",
@@ -56,7 +79,24 @@ class RunResult:
 
 
 def resolve_columns(header: list[str], job: JobConfig) -> tuple[set[int], set[int]]:
-    """Номера числовых столбцов и столбцов дат — по именам и шаблону из конфига."""
+    """Определяет, какие столбцы таблицы числовые, а какие с датами.
+
+    Зачем нужна: очистке нужно знать правило для каждого столбца, а в конфиге
+    столбцы заданы именами (columns.numeric, columns.date) или шаблоном
+    (columns.numeric_pattern — например, все месяцы вида 2026-03). Функция
+    переводит это в номера столбцов текущей таблицы. Все остальные столбцы
+    считаются текстовыми.
+
+    Аргументы:
+        header: заголовки таблицы (уже нормализованные).
+        job: задание с настройками столбцов.
+
+    Возвращает:
+        Кортеж (номера числовых столбцов, номера столбцов с датами).
+
+    Исключения:
+        ConfigError: один и тот же столбец указан и как число, и как дата.
+    """
     numeric = {
         i for i, name in enumerate(header)
         if name in job.numeric_columns or (job.numeric_pattern and job.numeric_pattern.match(name))
@@ -69,7 +109,27 @@ def resolve_columns(header: list[str], job: JobConfig) -> tuple[set[int], set[in
 
 
 class SyncRunner:
+    """Сценарий синка: связывает все модули в цепочку для одного задания.
+
+    Зачем нужен: это «дирижёр» — единственное место, которое знает обо всех
+    шагах (чтение → очистка → проверки → сравнение → запись → бэкап → история)
+    и вызывает их по порядку. Источник, приёмник и хранилище состояния
+    передаются через конструктор, поэтому в тестах их можно подменить
+    поддельными объектами и проверить сценарий без Google и Excel.
+    """
     def __init__(self, config: AppConfig, source=None, target=None, state=None):
+        """Готовит всё для запусков: источник Google, хранилище состояния, Excel.
+
+        Зачем нужна: объекты создаются один раз и переиспользуются всеми заданиями
+        одного запуска («Обновить всё») — например, Google-таблица открывается
+        только один раз. Excel здесь не создаётся — см. свойство target.
+
+        Аргументы:
+            config: загруженный AppConfig.
+            source: источник данных; None — GoogleSheetSource из конфига.
+            target: приёмник; None — ExcelTarget будет создан при первой записи.
+            state: хранилище состояния; None — StateStore из конфига.
+        """
         self.config = config
         self.source = source or GoogleSheetSource(config.spreadsheet_id, config.credentials_file)
         self.state = state or StateStore(config.state_db)
@@ -77,12 +137,39 @@ class SyncRunner:
 
     @property
     def target(self) -> ExcelTarget:
+        """Приёмник данных (ExcelTarget), который создаётся при первом обращении.
+
+        Зачем нужна: dry-run и запуски, где данные не прошли проверку или не
+        изменились, вообще не должны трогать Excel. Объект создаётся только тогда,
+        когда действительно пора писать.
+        """
         # создаём при первой записи: dry-run и ошибки валидации не должны запускать Excel
         if self._target is None:
             self._target = ExcelTarget(self.config.workbook_path, self.config.log_sheet)
         return self._target
 
     def run(self, job_name: str, *, dry_run: bool = False, force: bool = False) -> RunResult:
+        """Выполняет синк одного задания и фиксирует результат в истории.
+
+        Зачем нужна: обёртка над _run(). Если на любом шаге возникла SyncError,
+        запуск записывается в историю со статусом failed и текстом ошибки, а сама
+        ошибка пробрасывается дальше — в excel_entry или cli, где превращается в
+        понятное сообщение.
+
+        Аргументы:
+            job_name: имя задания из config.yaml.
+            dry_run: прочитать и проверить, но не писать в Excel.
+            force: писать, даже если данные не изменились; проверка резкого
+                падения числа строк при этом становится предупреждением.
+
+        Возвращает:
+            RunResult.
+
+        Исключения:
+            ConfigError: нет такого задания.
+            ValidationFailed: данные не прошли проверки (Excel не тронут).
+            SyncError: прочие ожидаемые ошибки (доступ, Google, Excel, состояние).
+        """
         job = self.config.job(job_name)
         started = datetime.datetime.now()
         try:
@@ -92,6 +179,28 @@ class SyncRunner:
             raise
 
     def _run(self, job: JobConfig, started: datetime.datetime, *, dry_run: bool, force: bool) -> RunResult:
+        """Сам сценарий синка задания, шаг за шагом.
+
+        Зачем нужна: здесь записан весь порядок работы:
+            1. прочитать диапазон из Google (source.read_table);
+            2. определить типы столбцов и почистить данные (clean_table);
+            3. проверить данные (validate) с учётом прошлого успешного запуска;
+               сохранить отчёт о проблемах; при ошибках — стоп (ValidationFailed);
+            4. сравнить с прошлым снимком (diff_tables) и по отпечатку понять,
+               изменились ли данные вообще;
+            5. dry-run → ничего не пишем; не изменилось и нет force → ничего не
+               пишем; иначе записываем в Excel и делаем бэкап;
+            6. записываем запуск в историю; при успешной записи — сохраняем снимок
+               для следующего сравнения и строку на лист журнала в Excel.
+
+        Аргументы:
+            job: задание.
+            started: время начала (для истории).
+            dry_run, force: см. run().
+
+        Возвращает:
+            RunResult.
+        """
         t0 = time.perf_counter()
 
         raw = self.source.read_table(job.source_tab, job.source_range)
@@ -142,6 +251,19 @@ class SyncRunner:
         return RunResult(job, status, table, report, diff, time.perf_counter() - t0, backup_path, report_path)
 
     def _save_report(self, job: JobConfig, report: ValidationReport) -> Path:
+        """Сохраняет полный список проблем в данных в файл reports/<задание>_<время>.txt.
+
+        Зачем нужна: в окне Excel помещаются только первые несколько проблем, а
+        полный список с номерами строк нужен, чтобы пойти и исправить источник.
+        Старые отчёты удаляются, остаются последние storage.backup_keep.
+
+        Аргументы:
+            job: задание (имя и название попадают в файл).
+            report: отчёт проверок.
+
+        Возвращает:
+            Путь к созданному файлу.
+        """
         directory = self.config.report_dir
         directory.mkdir(parents=True, exist_ok=True)
         stamp = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")

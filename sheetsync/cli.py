@@ -141,7 +141,7 @@ def _check(config) -> int:
         for job in config.jobs.values():
             report(job.target_sheet in sheets, f"  лист '{job.target_sheet}' для задания {job.name}")
     else:
-        report(False, f"нет книги Excel {config.workbook_path} — создайте: python scripts/create_demo_workbook.py")
+        report(False, f"нет книги Excel {config.workbook_path} — проверьте excel.workbook в config.yaml")
 
     print("\nВсё готово к синку." if ok else "\nЕсть проблемы — см. строки с [!!].")
     return 0 if ok else 1

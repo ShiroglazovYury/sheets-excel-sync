@@ -53,7 +53,7 @@ class ExcelTarget:
         if not self.workbook_path.exists():
             raise TargetError(
                 f"Не найдена книга Excel: {self.workbook_path}\n"
-                "Создайте её: python scripts/create_demo_workbook.py — или поправьте excel.workbook в config.yaml."
+                "Проверьте путь excel.workbook в config.yaml."
             )
         try:
             return xw.Book(str(self.workbook_path))

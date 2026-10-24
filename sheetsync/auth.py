@@ -18,8 +18,8 @@ from google.oauth2 import service_account
 
 from .errors import AuthError
 
-# Полный доступ к таблицам: синку хватило бы readonly, но скрипт загрузки
-# демо-данных (scripts/seed_google_sheet.py) пишет в таблицу тем же ключом.
+# Доступ к Google Sheets. Сама программа таблицу только читает; запись
+# в источник ограничена ролью «Читатель», выданной сервисному аккаунту.
 SCOPES = ["https://www.googleapis.com/auth/spreadsheets"]
 
 
@@ -29,7 +29,7 @@ def load_credentials(path: Path):
         raise AuthError(
             f"Не найден файл ключа Google: {path}\n"
             "Создайте сервисный аккаунт в Google Cloud Console, скачайте JSON-ключ "
-            "и положите его по этому пути (см. README, шаг 3)."
+            "и положите его по этому пути."
         )
     try:
         info = json.loads(path.read_text(encoding="utf-8"))

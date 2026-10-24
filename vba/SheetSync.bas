@@ -2,7 +2,7 @@ Attribute VB_Name = "SheetSync"
 ' Buttons for sheets-excel-sync: Google Sheets -> Excel.
 '
 ' Import this module into PERSONAL.XLSB (Alt+F11 -> File -> Import File).
-' Requirements (see README, step 5):
+' Requirements:
 '   * xlwings add-in installed and xlwings.bas imported into the same VBA project;
 '   * xlwings ribbon -> Interpreter = <project>\.venv\Scripts\python.exe
 '   * xlwings ribbon -> PYTHONPATH  = <project folder>

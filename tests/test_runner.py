@@ -72,6 +72,17 @@ def test_unchanged_source_is_not_rewritten(setup):
     assert runner.run("orders", force=True).status == "success"
 
 
+def test_unchanged_is_decided_like_the_message_says(setup):
+    """Те же данные с «шумом» в 12-м знаке: окно пишет «не изменилось» — значит, и не пишем."""
+    runner, source, target, _ = setup
+    runner.run("orders")
+    source.table = orders(1500, price=512.5 + 1e-12)
+    result = runner.run("orders")
+    assert not result.diff.has_changes
+    assert result.status == "unchanged"
+    assert len(target.writes) == 1
+
+
 def test_changes_are_reported(setup):
     runner, source, _, _ = setup
     runner.run("orders")

@@ -186,8 +186,8 @@ class SyncRunner:
             2. определить типы столбцов и почистить данные (clean_table);
             3. проверить данные (validate) с учётом прошлого успешного запуска;
                сохранить отчёт о проблемах; при ошибках — стоп (ValidationFailed);
-            4. сравнить с прошлым снимком (diff_tables) и по отпечатку понять,
-               изменились ли данные вообще;
+            4. сравнить с прошлым снимком (diff_tables); если отличий нет —
+               данные не изменились;
             5. dry-run → ничего не пишем; не изменилось и нет force → ничего не
                пишем; иначе записываем в Excel и делаем бэкап;
             6. записываем запуск в историю; при успешной записи — сохраняем снимок
@@ -218,7 +218,11 @@ class SyncRunner:
             raise ValidationFailed(report, report_path)
 
         diff = diff_tables(self.state.load_snapshot(job.name), table, job.rules.key_columns)
-        unchanged = last is not None and last["fingerprint"] == table.fingerprint()
+        # Решаем по тому же diff, который человек видит в окне. Точный хэш тут не
+        # годится: он различает мелочи, которые diff справедливо считает одинаковыми
+        # (хвост дроби в 12-м знаке, пустая строка и пустая ячейка), и тогда окно
+        # писало «не изменилось», а данные всё равно перезаписывались.
+        unchanged = not diff.has_changes
 
         backup_path = None
         if dry_run:
